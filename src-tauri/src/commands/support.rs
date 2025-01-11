@@ -6,11 +6,10 @@ use std::{
   path::Path,
 };
 use sysinfo::{Disks, System};
+use tauri::Manager;
 use tempfile::NamedTempFile;
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
-
-use tauri::api::path::config_dir;
 
 use crate::{
   config::LauncherConfig,
@@ -87,19 +86,20 @@ pub struct SupportPackage {
 
 fn dump_per_game_info(
   config_lock: &tokio::sync::MutexGuard<'_, LauncherConfig>,
+  app_handle: &tauri::AppHandle,
   package: &mut SupportPackage,
   zip_file: &mut zip::ZipWriter<&std::fs::File>,
   install_path: &Path,
   game_name: &str,
 ) -> Result<(), CommandError> {
   // Save OpenGOAL config folder (this includes saves and settings)
-  let game_config_dir = match config_dir() {
-    None => {
+  let game_config_dir = match app_handle.path().config_dir() {
+    Ok(path) => path.join("OpenGOAL"),
+    Err(_) => {
       return Err(CommandError::Support(
         "Couldn't determine application config directory".to_owned(),
       ))
     }
-    Some(path) => path.join("OpenGOAL"),
   };
   append_dir_contents_to_zip(
     zip_file,
@@ -367,21 +367,21 @@ pub async fn generate_support_package(
   let mut zip_file = zip::ZipWriter::new(save_file.as_file());
 
   // Save Launcher config folder
-  let launcher_config_dir = match app_handle.path_resolver().app_config_dir() {
-    None => {
+  let launcher_config_dir = match app_handle.path().app_config_dir() {
+    Ok(path) => path,
+    Err(_) => {
       return Err(CommandError::Support(
         "Couldn't determine launcher config directory".to_owned(),
       ))
     }
-    Some(path) => path,
   };
-  let launcher_log_dir = match app_handle.path_resolver().app_log_dir() {
-    None => {
+  let launcher_log_dir = match app_handle.path().app_log_dir() {
+    Ok(path) => path,
+    Err(_) => {
       return Err(CommandError::Support(
         "Couldn't determine launcher log directory".to_owned(),
       ))
     }
-    Some(path) => path,
   };
   append_dir_contents_to_zip(
     &mut zip_file,
@@ -404,6 +404,7 @@ pub async fn generate_support_package(
   // Per Game Info
   dump_per_game_info(
     &config_lock,
+    &app_handle,
     &mut package,
     &mut zip_file,
     install_path,
@@ -416,6 +417,7 @@ pub async fn generate_support_package(
   })?;
   dump_per_game_info(
     &config_lock,
+    &app_handle,
     &mut package,
     &mut zip_file,
     install_path,
@@ -467,10 +469,18 @@ pub async fn generate_support_package(
     ));
   }
   // Seems good, move it to the user's intended destination
-  fs::rename(&save_file.path(), save_path).map_err(|_| {
-    CommandError::Support(
-      "Support package was unable to be moved from it's temporary file location".to_owned(),
-    )
+  fs::copy(&save_file.path(), save_path).map_err(|e| {
+    CommandError::Support(format!(
+      "Support package was unable to be moved from its temporary file location: {:?}",
+      e
+    ))
+  })?;
+
+  fs::remove_file(&save_file.path()).map_err(|e| {
+    CommandError::Support(format!(
+      "Support package was copied but the original file could not be removed: {:?}",
+      e
+    ))
   })?;
   Ok(())
 }
